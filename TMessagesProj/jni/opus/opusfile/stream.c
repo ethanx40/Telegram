@@ -14,6 +14,13 @@
  last mod: $Id: vorbisfile.c 17573 2010-10-27 14:53:59Z xiphmont $
 
  ********************************************************************/
+/* On Android API < 24 with _FILE_OFFSET_BITS=64, fseeko/ftello are gated
+   behind __ANDROID_API__ >= 24.  Undefine the flag here (before any system
+   header is pulled in) so we get the standard fseeko/ftello declarations. */
+#if defined(__ANDROID__) && defined(_FILE_OFFSET_BITS)
+# undef _FILE_OFFSET_BITS
+#endif
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
