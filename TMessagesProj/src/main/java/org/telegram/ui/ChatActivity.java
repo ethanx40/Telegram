@@ -180,6 +180,8 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.Timer;
 import org.telegram.messenger.TranslateController;
+import org.telegram.messenger.LLMTranslateConfig;
+import org.telegram.messenger.LLMTranslateController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
@@ -1598,6 +1600,7 @@ public class ChatActivity extends BaseFragment implements
     private final static int translate = 62;
     private final static int scheduled = 63;
     private final static int edit_quick_reply = 64;
+    private final static int llm_translate = 75;
 
     private final static int copy_business_link = 65;
     private final static int share_business_link = 66;
@@ -3973,6 +3976,16 @@ public class ChatActivity extends BaseFragment implements
                     if (!getMessagesController().getTranslateController().toggleTranslatingDialog(getDialogId(), true)) {
                         updateTopPanel(true);
                     }
+                } else if (id == llm_translate) {
+                    LLMTranslateConfig config = LLMTranslateConfig.getInstance();
+                    if (!config.isConfigured()) {
+                        BulletinFactory.of(ChatActivity.this).createSimpleBulletin(
+                                R.drawable.msg_translate,
+                                "Please configure LLM Translate in Settings first"
+                        ).show();
+                        return;
+                    }
+                    showLLMTranslateDialog();
                 } else if (id == call || id == video_call) {
                     if (currentUser != null && getParentActivity() != null) {
                         VoIPHelper.startCall(currentUser, id == video_call, userInfo != null && userInfo.video_calls_available, getParentActivity(), getMessagesController().getUserFull(currentUser.id), getAccountInstance());
@@ -4390,6 +4403,7 @@ public class ChatActivity extends BaseFragment implements
             }
             translateItem = headerItem.lazilyAddSubItem(translate, R.drawable.msg_translate, LocaleController.getString(R.string.TranslateMessage));
             updateTranslateItemVisibility();
+            headerItem.lazilyAddSubItem(llm_translate, R.drawable.msg_translate, "LLM Translate");
             if (currentChat != null && !currentChat.creator && !ChatObject.hasAdminRights(currentChat)) {
                 headerItem.lazilyAddSubItem(report, R.drawable.msg_report, LocaleController.getString(R.string.ReportChat));
             }
@@ -11053,6 +11067,127 @@ public class ChatActivity extends BaseFragment implements
         searchItem.setSearchFieldHint(null);
         searchItem.clearSearchText();
         getMediaDataController().searchMessagesInChat(searchingQuery = "", dialog_id, mergeDialogId, classGuid, 0, threadMessageId, searchingUserMessages, searchingChatMessages, searchingReaction);
+    }
+
+    private void showLLMTranslateDialog() {
+        if (getParentActivity() == null) return;
+        final long did = getDialogId();
+        final LLMTranslateConfig config = LLMTranslateConfig.getInstance();
+        final LLMTranslateController ctrl = getMessagesController().getLLMTranslateController();
+
+        // 先自动探测对方语言（如果还没有）
+        ArrayList<MessageObject> peerMsgs = new ArrayList<>();
+        for (int i = 0; i < messages.size() && peerMsgs.size() < 10; i++) {
+            MessageObject m = messages.get(i);
+            if (m != null && !m.isOutOwner() && m.type == MessageObject.TYPE_TEXT) {
+                peerMsgs.add(m);
+            }
+        }
+        ctrl.detectPeerLanguage(did, peerMsgs, detectedLang -> buildAndShowLLMDialog(did, config, ctrl));
+    }
+
+    private void buildAndShowLLMDialog(long did, LLMTranslateConfig config, LLMTranslateController ctrl) {
+        if (getParentActivity() == null) return;
+
+        boolean isEnabled = config.isDialogLLMTranslateEnabled(did);
+        boolean inEnabled = config.isDialogIncomingEnabled(did);
+        boolean outEnabled = config.isDialogOutgoingEnabled(did);
+        String myLang = config.getDialogMyLanguage(did);
+        String peerLang = config.getDialogPeerLanguage(did);
+
+        ArrayList<TranslateController.Language> allLangs = TranslateController.getLanguages();
+        String[] langNames = new String[allLangs.size()];
+        String[] langCodes = new String[allLangs.size()];
+        for (int i = 0; i < allLangs.size(); i++) {
+            langNames[i] = allLangs.get(i).displayName;
+            langCodes[i] = allLangs.get(i).code;
+        }
+
+        String check = "✓  ";
+        String uncheck = "    ";
+        String[] items = {
+            (isEnabled ? check : uncheck) + "Enable auto-translate",
+            (inEnabled ? check : uncheck) + "Translate incoming messages",
+            (outEnabled ? check : uncheck) + "Translate outgoing messages",
+            "My language:  " + (myLang != null ? myLang : "auto"),
+            "Peer language:  " + (peerLang != null ? peerLang : "auto-detect"),
+        };
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("LLM Translate");
+        builder.setItems(items, (dialog, which) -> {
+            switch (which) {
+                case 0: { // Toggle total switch
+                    boolean newVal = !config.isDialogLLMTranslateEnabled(did);
+                    config.setDialogLLMTranslateEnabled(did, newVal);
+                    if (newVal) triggerTranslateVisibleMessages(did, ctrl);
+                    break;
+                }
+                case 1: { // Toggle incoming
+                    boolean newVal = !config.isDialogIncomingEnabled(did);
+                    config.setDialogIncomingEnabled(did, newVal);
+                    autoEnableIfNeeded(did, config);
+                    if (newVal) triggerTranslateVisibleMessages(did, ctrl);
+                    break;
+                }
+                case 2: { // Toggle outgoing
+                    boolean newVal = !config.isDialogOutgoingEnabled(did);
+                    config.setDialogOutgoingEnabled(did, newVal);
+                    autoEnableIfNeeded(did, config);
+                    break;
+                }
+                case 3: { // My language
+                    AlertDialog.Builder lb = new AlertDialog.Builder(getParentActivity());
+                    lb.setTitle("My Language");
+                    lb.setItems(langNames, (d2, w2) -> {
+                        config.setDialogMyLanguage(did, langCodes[w2]);
+                        autoEnableIfNeeded(did, config);
+                        // 重新打开主弹窗
+                        buildAndShowLLMDialog(did, config, ctrl);
+                    });
+                    lb.setNegativeButton("Cancel", (d2, w2) -> buildAndShowLLMDialog(did, config, ctrl));
+                    lb.show();
+                    return; // 不重新打开主弹窗（子弹窗的回调会打开）
+                }
+                case 4: { // Peer language
+                    AlertDialog.Builder lb = new AlertDialog.Builder(getParentActivity());
+                    lb.setTitle("Peer Language");
+                    lb.setItems(langNames, (d2, w2) -> {
+                        config.setDialogPeerLanguage(did, langCodes[w2]);
+                        autoEnableIfNeeded(did, config);
+                        buildAndShowLLMDialog(did, config, ctrl);
+                    });
+                    lb.setNegativeButton("Cancel", (d2, w2) -> buildAndShowLLMDialog(did, config, ctrl));
+                    lb.show();
+                    return;
+                }
+            }
+            // 开关操作后立即重新打开弹窗（刷新状态）
+            buildAndShowLLMDialog(did, config, ctrl);
+        });
+        builder.setNegativeButton("Close", null);
+        builder.show();
+    }
+
+    /** 设置子选项时自动开启总开关 */
+    private void autoEnableIfNeeded(long did, LLMTranslateConfig config) {
+        if (!config.isDialogLLMTranslateEnabled(did)) {
+            config.setDialogLLMTranslateEnabled(did, true);
+        }
+    }
+
+    /** 翻译当前可见的对方消息 */
+    private void triggerTranslateVisibleMessages(long did, LLMTranslateController ctrl) {
+        if (chatListView == null) return;
+        for (int i = 0; i < chatListView.getChildCount(); i++) {
+            View child = chatListView.getChildAt(i);
+            if (child instanceof ChatMessageCell) {
+                ChatMessageCell cell = (ChatMessageCell) child;
+                if (cell.getMessageObject() != null) {
+                    ctrl.checkAndTranslateIncoming(cell.getMessageObject());
+                }
+            }
+        }
     }
 
     private void updateTranslateItemVisibility() {
@@ -20754,6 +20889,7 @@ public class ChatActivity extends BaseFragment implements
                     obj.stableId = lastStableId++;
                 }
                 getMessagesController().getTranslateController().checkTranslation(obj, false);
+                getMessagesController().getLLMTranslateController().checkAndTranslateIncoming(obj);
                 if (load_type == 1) {
                     messages.add(0, obj);
                 } else {
@@ -24177,6 +24313,23 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
         }
+        // Fallback: 如果在可见 children 中没找到，从 messages 列表中更新并刷新 adapter
+        if (!updated && messageObject.messageOwner != null && messageObject.messageOwner.translatedText != null) {
+            for (int i = 0; i < messages.size(); i++) {
+                MessageObject m = messages.get(i);
+                if (m != null && m.getId() == messageObject.getId()) {
+                    m.messageOwner.translatedText = messageObject.messageOwner.translatedText;
+                    m.messageOwner.translatedToLanguage = messageObject.messageOwner.translatedToLanguage;
+                    m.updateTranslation(true);
+                    m.forceUpdate = true;
+                    updated = true;
+                    break;
+                }
+            }
+            if (updated && chatAdapter != null) {
+                chatAdapter.notifyDataSetChanged(true);
+            }
+        }
         return updated;
     }
 
@@ -25307,6 +25460,7 @@ public class ChatActivity extends BaseFragment implements
                 }
                 obj.stableId = lastStableId++;
                 getMessagesController().getTranslateController().checkTranslation(obj, false);
+                getMessagesController().getLLMTranslateController().checkAndTranslateIncoming(obj);
                 messages.add(placeToPaste, obj);
                 if (placeToPaste == 0 && !obj.isSponsored()) {
                     needMoveScrollToLastMessage = true;

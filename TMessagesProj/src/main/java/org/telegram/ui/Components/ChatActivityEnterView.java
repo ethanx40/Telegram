@@ -137,6 +137,8 @@ import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessageSuggestionParams;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.LLMTranslateConfig;
+import org.telegram.messenger.LLMTranslateController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
@@ -7473,6 +7475,45 @@ public class ChatActivityEnterView extends FrameLayout implements
             parentFragment.showQuoteMessageUpdate();
             return false;
         }
+
+        // LLM 翻译拦截：先翻译再发送翻译内容给对方
+        LLMTranslateConfig llmConfig = LLMTranslateConfig.getInstance();
+        if (llmConfig.isEnabled() && llmConfig.isDialogOutgoingEnabled(dialog_id)
+                && llmConfig.isDialogLLMTranslateEnabled(dialog_id)) {
+            String peerLang = llmConfig.getDialogPeerLanguage(dialog_id);
+            String myLang = llmConfig.getDialogMyLanguage(dialog_id);
+            if (!TextUtils.isEmpty(peerLang) && !LLMTranslateController.normLang(peerLang).equals(LLMTranslateController.normLang(myLang))) {
+                final CharSequence originalText = text;
+                final boolean fNotify = notify;
+                final int fScheduleDate = scheduleDate;
+                final int fScheduleRepeatPeriod = scheduleRepeatPeriod;
+                final long fPayStars = payStars;
+                // 异步翻译，完成后发送翻译文本
+                Utilities.globalQueue.postRunnable(() -> {
+                    String translated = MessagesController.getInstance(currentAccount)
+                            .getLLMTranslateController().callTranslateSync(originalText.toString(), peerLang);
+                    AndroidUtilities.runOnUIThread(() -> {
+                        if (!TextUtils.isEmpty(translated)) {
+                            // 发送翻译后的内容给对方
+                            doProcessSendingText(translated, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, originalText.toString());
+                        } else {
+                            // 翻译失败，发送原文
+                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
+                        }
+                    });
+                });
+                return true; // 告诉调用方消息"已处理"（实际在后台翻译中）
+            }
+        }
+
+        return doProcessSendingText(text, notify, scheduleDate, scheduleRepeatPeriod, payStars, null);
+    }
+
+    /**
+     * 实际的发送处理逻辑（从 processSendingText 提取）。
+     * @param originalTextForLocal 非 null 时表示本地应显示原文+翻译（text 是翻译后的内容）
+     */
+    private boolean doProcessSendingText(CharSequence text, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long payStars, String originalTextForLocal) {
         int[] emojiOnly = new int[1];
         Emoji.parseEmojis(text, emojiOnly);
         boolean hasOnlyEmoji = emojiOnly[0] > 0;
@@ -7587,6 +7628,43 @@ public class ChatActivityEnterView extends FrameLayout implements
                     parentFragment.fallbackFieldPanel();
                 }
                 SendMessagesHelper.getInstance(currentAccount).sendMessage(params);
+
+                // LLM 翻译：发送翻译后内容给对方后，在本地消息上记录原文用于组合展示
+                if (originalTextForLocal != null) {
+                    final String origText = originalTextForLocal;
+                    final String transText = message[0].toString();
+                    AndroidUtilities.runOnUIThread(() -> {
+                        if (parentFragment != null && parentFragment.getChatListView() != null) {
+                            RecyclerListView listView = parentFragment.getChatListView();
+                            for (int ci = 0; ci < listView.getChildCount(); ci++) {
+                                View child = listView.getChildAt(ci);
+                                if (child instanceof org.telegram.ui.Cells.ChatMessageCell) {
+                                    org.telegram.ui.Cells.ChatMessageCell cell = (org.telegram.ui.Cells.ChatMessageCell) child;
+                                    MessageObject mo = cell.getMessageObject();
+                                    if (mo != null && mo.isOutOwner() && mo.messageOwner != null
+                                            && transText.equals(mo.messageOwner.message)
+                                            && mo.messageOwner.translatedText == null) {
+                                        TLRPC.TL_textWithEntities origEntity = new TLRPC.TL_textWithEntities();
+                                        origEntity.text = origText;
+                                        origEntity.entities = new java.util.ArrayList<>();
+                                        mo.messageOwner.translatedText = origEntity;
+                                        mo.messageOwner.translatedToLanguage = LLMTranslateConfig.getInstance().getMyLanguage();
+                                        mo.translated = true;
+                                        // 本地展示：原文 + 空行 + 翻译（发送给对方的内容）
+                                        mo.applyNewText(origText + "\n\n" + transText);
+                                        mo.generateCaption();
+                                        MessagesStorage.getInstance(currentAccount)
+                                                .updateMessageCustomParams(mo.getDialogId(), mo.messageOwner);
+                                        mo.forceUpdate = true;
+                                        cell.setMessageObject(mo, cell.getCurrentMessagesGroup(), cell.isPinnedBottom(), cell.isPinnedTop(), cell.isFirstInChat(), cell.isLastInChatList());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }, 500);
+                }
+
                 start = end + 1;
             } while (end != text.length());
             return true;

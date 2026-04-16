@@ -48,6 +48,7 @@ import androidx.core.graphics.ColorUtils;
 
 import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.messenger.browser.Browser;
+import org.telegram.messenger.LLMTranslateConfig;
 import org.telegram.messenger.ringtone.RingtoneDataStore;
 import org.telegram.messenger.utils.tlutils.AmountUtils;
 import org.telegram.messenger.utils.tlutils.TlUtils;
@@ -3657,6 +3658,26 @@ public class MessageObject {
                 generateCaption();
             }
             return replyUpdated || true;
+        } else if (
+            messageOwner != null &&
+            translatedText != null &&
+            messageOwner.translatedToLanguage != null &&
+            LLMTranslateConfig.getInstance().isEnabled() &&
+            LLMTranslateConfig.getInstance().isDialogLLMTranslateEnabled(getDialogId())
+        ) {
+            // LLM 翻译路径：在原文下方展示翻译结果
+            if (translated && !summarized) {
+                return replyUpdated || false;
+            }
+            translated = true;
+            summarized = false;
+            // 拼接：原文 + 空行 + 翻译
+            String original = messageOwner.message != null ? messageOwner.message : "";
+            String translatedStr = translatedText.text != null ? translatedText.text : "";
+            String combined = original + "\n\n" + translatedStr;
+            applyNewText(combined);
+            generateCaption();
+            return replyUpdated || true;
         } else if (messageOwner != null && (force || translated || summarized)) {
             translated = false;
             summarized = false;
@@ -7185,7 +7206,15 @@ public class MessageObject {
         } else if (messageOwner.translatedText != null && translated) {
             captionSummarized = false;
             captionTranslated = true;
-            text = messageOwner.translatedText.text;
+            if (LLMTranslateConfig.getInstance().isEnabled() &&
+                    LLMTranslateConfig.getInstance().isDialogLLMTranslateEnabled(getDialogId())) {
+                // LLM 翻译：拼接原文+翻译
+                String orig = messageOwner.message != null ? messageOwner.message : "";
+                String trans = messageOwner.translatedText.text != null ? messageOwner.translatedText.text : "";
+                text = orig + "\n\n" + trans;
+            } else {
+                text = messageOwner.translatedText.text;
+            }
             entities = messageOwner.translatedText.entities;
         } else {
             captionSummarized = false;

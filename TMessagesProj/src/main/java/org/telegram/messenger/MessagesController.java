@@ -745,6 +745,7 @@ public class MessagesController extends BaseController implements NotificationCe
     private TopicsController topicsController;
     private CacheByChatsController cacheByChatsController;
     private TranslateController translateController;
+    private LLMTranslateController llmTranslateController;
     public boolean uploadMarkupVideo;
     public boolean giftAttachMenuIcon;
     public boolean giftTextFieldIcon;
@@ -1003,6 +1004,10 @@ public class MessagesController extends BaseController implements NotificationCe
 
     public TranslateController getTranslateController() {
         return translateController;
+    }
+
+    public LLMTranslateController getLLMTranslateController() {
+        return llmTranslateController;
     }
 
     public boolean isForum(long dialogId) {
@@ -1930,6 +1935,7 @@ public class MessagesController extends BaseController implements NotificationCe
         topicsController = new TopicsController(num);
         cacheByChatsController = new CacheByChatsController(num);
         translateController = new TranslateController(this);
+        llmTranslateController = new LLMTranslateController(num);
 
         Utilities.globalQueue.postRunnable(() -> {
             enableJoined = notificationsPreferences.getBoolean("EnableContactJoined", true);
@@ -6386,6 +6392,9 @@ public class MessagesController extends BaseController implements NotificationCe
         getMediaDataController().cleanup();
         getColorPalette().cleanup();
         getTranslateController().cleanup();
+        if (llmTranslateController != null) {
+            llmTranslateController.cleanup();
+        }
         getSavedMessagesController().cleanup();
         if (storiesController != null) {
             storiesController.cleanup();
