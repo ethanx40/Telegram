@@ -7477,7 +7477,7 @@ public class ChatActivityEnterView extends FrameLayout implements
             return false;
         }
 
-        // LLM 翻译拦截：先检测语言，需要翻译再翻译后发送
+        // LLM 翻译拦截：本地先显示原文，后台翻译完成后再真正发送翻译内容
         LLMTranslateConfig llmConfig = LLMTranslateConfig.getInstance();
         if (llmConfig.isEnabled() && llmConfig.isDialogOutgoingEnabled(dialog_id)
                 && llmConfig.isDialogLLMTranslateEnabled(dialog_id)) {
@@ -7487,9 +7487,9 @@ public class ChatActivityEnterView extends FrameLayout implements
                 final CharSequence originalText = text;
                 final String textStr = originalText.toString().trim();
 
-                // 跳过不需要翻译的文本：纯数字/符号/表情、或已是目标语言的短文本
+                // 跳过不需要翻译的文本
                 if (LLMTranslateController.shouldSkipTranslation(textStr, peerLang)) {
-                    // 不需要翻译，直接发原文
+                    // 不需要翻译，直接走正常发送
                 } else {
 
                 final boolean fNotify = notify;
@@ -7497,54 +7497,45 @@ public class ChatActivityEnterView extends FrameLayout implements
                 final int fScheduleRepeatPeriod = scheduleRepeatPeriod;
                 final long fPayStars = payStars;
                 final String fPeerLang = peerLang;
-                // 先检测消息语言：如果已经是对方语言（我偶尔发英文），跳过翻译直接发
-                LanguageDetector.detectLanguage(originalText.toString(), detectedLang -> {
+                final long fDialogId = dialog_id;
+
+                // 第一步：在本地 UI 中创建一条占位消息，显示原文 + "发送中"状态
+                final int placeholderId = insertLocalPlaceholderMessage(textStr, fDialogId);
+
+                // 第二步：后台检测语言 + 翻译
+                LanguageDetector.detectLanguage(textStr, detectedLang -> {
+                    boolean needTranslate = true;
                     if (detectedLang != null && !"und".equals(detectedLang)
                             && LLMTranslateController.normLang(detectedLang).equals(LLMTranslateController.normLang(fPeerLang))) {
-                        // 消息已经是对方语言，直接发原文
-                        AndroidUtilities.runOnUIThread(() ->
-                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null));
-                        return;
+                        needTranslate = false;
                     }
-                    // 检测为 und 且文本很短，大概率是通用词，跳过翻译
                     if (("und".equals(detectedLang) || detectedLang == null) && textStr.length() <= 10) {
-                        AndroidUtilities.runOnUIThread(() ->
-                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null));
+                        needTranslate = false;
+                    }
+                    if (!needTranslate) {
+                        // 不需要翻译：删除占位消息，用原文正常发送
+                        AndroidUtilities.runOnUIThread(() -> {
+                            removeLocalPlaceholderMessage(placeholderId, fDialogId);
+                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
+                        });
                         return;
                     }
                     // 需要翻译
-                    Utilities.globalQueue.postRunnable(() -> {
-                        String translated = MessagesController.getInstance(currentAccount)
-                                .getLLMTranslateController().callTranslateSync(originalText.toString(), fPeerLang);
-                        AndroidUtilities.runOnUIThread(() -> {
-                            if (!TextUtils.isEmpty(translated)) {
-                                doProcessSendingText(translated, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, originalText.toString());
-                            } else {
-                                doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
-                            }
-                        });
-                    });
+                    doTranslateAndSend(textStr, fPeerLang, fDialogId, placeholderId,
+                            originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars);
                 }, e -> {
-                    // 检测失败且文本很短，跳过翻译
                     if (textStr.length() <= 10) {
-                        AndroidUtilities.runOnUIThread(() ->
-                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null));
+                        AndroidUtilities.runOnUIThread(() -> {
+                            removeLocalPlaceholderMessage(placeholderId, fDialogId);
+                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
+                        });
                         return;
                     }
-                    // 检测失败，走翻译流程
-                    Utilities.globalQueue.postRunnable(() -> {
-                        String translated = MessagesController.getInstance(currentAccount)
-                                .getLLMTranslateController().callTranslateSync(originalText.toString(), fPeerLang);
-                        AndroidUtilities.runOnUIThread(() -> {
-                            if (!TextUtils.isEmpty(translated)) {
-                                doProcessSendingText(translated, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, originalText.toString());
-                            } else {
-                                doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
-                            }
-                        });
-                    });
+                    doTranslateAndSend(textStr, fPeerLang, fDialogId, placeholderId,
+                            originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars);
                 });
-                return true; // 告诉调用方消息"已处理"（实际在后台翻译中）
+
+                return true;
                 } // end else: 需要翻译流程
             }
         }
@@ -7553,8 +7544,68 @@ public class ChatActivityEnterView extends FrameLayout implements
     }
 
     /**
+     * 在本地聊天 UI 中插入一条占位消息（显示原文，"发送中"状态），返回本地消息 ID。
+     */
+    private int insertLocalPlaceholderMessage(String text, long dialogId) {
+        TLRPC.TL_message msg = new TLRPC.TL_message();
+        msg.id = UserConfig.getInstance(currentAccount).getNewMessageId();
+        msg.out = true;
+        msg.peer_id = MessagesController.getInstance(currentAccount).getPeer(dialogId);
+        msg.from_id = new TLRPC.TL_peerUser();
+        msg.from_id.user_id = UserConfig.getInstance(currentAccount).getClientUserId();
+        msg.date = ConnectionsManager.getInstance(currentAccount).getCurrentTime();
+        msg.message = text;
+        msg.send_state = MessageObject.MESSAGE_SEND_STATE_SENDING;
+        msg.dialog_id = dialogId;
+
+        MessageObject msgObj = new MessageObject(currentAccount, msg, false, true);
+        msgObj.wasJustSent = true;
+
+        java.util.ArrayList<MessageObject> objArr = new java.util.ArrayList<>();
+        objArr.add(msgObj);
+        MessagesController.getInstance(currentAccount).updateInterfaceWithMessages(dialogId, objArr, 0);
+
+        return msg.id;
+    }
+
+    /**
+     * 删除本地占位消息
+     */
+    private void removeLocalPlaceholderMessage(int localMsgId, long dialogId) {
+        java.util.ArrayList<Integer> ids = new java.util.ArrayList<>();
+        ids.add(localMsgId);
+        MessagesController.getInstance(currentAccount).deleteMessages(ids, null, null, dialogId, 0, false, 0);
+    }
+
+    /**
+     * 后台翻译原文，翻译完成后删除占位消息并用翻译内容真正发送。
+     * 翻译失败时更新占位消息为发送失败状态。
+     */
+    private void doTranslateAndSend(String originalText, String targetLang, long dialogId, int placeholderId,
+                                     CharSequence originalCharSeq, boolean notify, int scheduleDate,
+                                     int scheduleRepeatPeriod, long payStars) {
+        Utilities.globalQueue.postRunnable(() -> {
+            String translated = MessagesController.getInstance(currentAccount)
+                    .getLLMTranslateController().callTranslateSync(originalText, targetLang);
+
+            AndroidUtilities.runOnUIThread(() -> {
+                // 删除占位消息
+                removeLocalPlaceholderMessage(placeholderId, dialogId);
+
+                if (!TextUtils.isEmpty(translated) && !translated.equals(originalText)) {
+                    // 翻译成功：用翻译内容真正发送，对方只看到翻译后的文本
+                    doProcessSendingText(translated, notify, scheduleDate, scheduleRepeatPeriod, payStars, originalText);
+                } else {
+                    // 翻译失败：用原文发送，不附带翻译信息
+                    doProcessSendingText(originalCharSeq, notify, scheduleDate, scheduleRepeatPeriod, payStars, null);
+                }
+            });
+        });
+    }
+
+    /**
      * 实际的发送处理逻辑（从 processSendingText 提取）。
-     * @param originalTextForLocal 非 null 时表示本地应显示原文+翻译（text 是翻译后的内容）
+     * @param originalTextForLocal 非 null 时表示 text 是翻译后的内容，本地应显示原文+翻译
      */
     private boolean doProcessSendingText(CharSequence text, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long payStars, String originalTextForLocal) {
         int[] emojiOnly = new int[1];
@@ -7672,7 +7723,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                 }
                 SendMessagesHelper.getInstance(currentAccount).sendMessage(params);
 
-                // LLM 翻译：发送翻译后内容给对方后，在本地消息上记录原文用于组合展示
+                // LLM 翻译：真正发送的是翻译内容，在本地消息上追加显示原文
                 if (originalTextForLocal != null) {
                     final String origText = originalTextForLocal;
                     final String transText = message[0].toString();
@@ -7693,7 +7744,6 @@ public class ChatActivityEnterView extends FrameLayout implements
                                         mo.messageOwner.translatedText = origEntity;
                                         mo.messageOwner.translatedToLanguage = LLMTranslateConfig.getInstance().getMyLanguage();
                                         mo.translated = true;
-                                        // 本地展示：原文 + 空行 + 翻译（发送给对方的内容）
                                         mo.applyNewText(origText + "\n\n" + transText);
                                         mo.generateCaption();
                                         MessagesStorage.getInstance(currentAccount)
