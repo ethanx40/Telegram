@@ -7578,8 +7578,9 @@ public class ChatActivityEnterView extends FrameLayout implements
     }
 
     /**
-     * 后台翻译原文，翻译完成后删除占位消息并用翻译内容真正发送。
-     * 翻译失败时更新占位消息为发送失败状态。
+     * 后台翻译原文，翻译完成后复用占位消息：
+     * 1. 先原地更新占位消息内容为"原文+翻译"，避免视觉跳动
+     * 2. 然后静默发送真实消息（翻译内容），并删除占位消息
      */
     private void doTranslateAndSend(String originalText, String targetLang, long dialogId, int placeholderId,
                                      CharSequence originalCharSeq, boolean notify, int scheduleDate,
@@ -7589,18 +7590,53 @@ public class ChatActivityEnterView extends FrameLayout implements
                     .getLLMTranslateController().callTranslateSync(originalText, targetLang);
 
             AndroidUtilities.runOnUIThread(() -> {
-                // 删除占位消息
-                removeLocalPlaceholderMessage(placeholderId, dialogId);
-
                 if (!TextUtils.isEmpty(translated) && !translated.equals(originalText)) {
-                    // 翻译成功：用翻译内容真正发送，对方只看到翻译后的文本
+                    // 翻译成功：先原地更新占位消息为"原文+翻译"显示
+                    updatePlaceholderWithTranslation(placeholderId, dialogId, originalText, translated);
+                    // 再真正发送翻译内容（对方只看到翻译后的文本）
                     doProcessSendingText(translated, notify, scheduleDate, scheduleRepeatPeriod, payStars, originalText);
+                    // 延迟删除占位消息，等真实消息已经插入列表后再移除，避免跳动
+                    AndroidUtilities.runOnUIThread(() -> {
+                        removeLocalPlaceholderMessage(placeholderId, dialogId);
+                    }, 300);
                 } else {
-                    // 翻译失败：用原文发送，不附带翻译信息
+                    // 翻译失败：删除占位消息，用原文发送
+                    removeLocalPlaceholderMessage(placeholderId, dialogId);
                     doProcessSendingText(originalCharSeq, notify, scheduleDate, scheduleRepeatPeriod, payStars, null);
                 }
             });
         });
+    }
+
+    /**
+     * 原地更新占位消息的显示内容为"原文\n\n翻译"，避免删除再添加导致的跳动。
+     */
+    private void updatePlaceholderWithTranslation(int placeholderId, long dialogId, String originalText, String translatedText) {
+        if (parentFragment == null || parentFragment.getChatListView() == null) return;
+        RecyclerListView listView = parentFragment.getChatListView();
+        for (int i = 0; i < listView.getChildCount(); i++) {
+            View child = listView.getChildAt(i);
+            if (child instanceof org.telegram.ui.Cells.ChatMessageCell) {
+                org.telegram.ui.Cells.ChatMessageCell cell = (org.telegram.ui.Cells.ChatMessageCell) child;
+                MessageObject mo = cell.getMessageObject();
+                if (mo != null && mo.getId() == placeholderId && mo.messageOwner != null) {
+                    // 设置翻译信息
+                    TLRPC.TL_textWithEntities transEntity = new TLRPC.TL_textWithEntities();
+                    transEntity.text = translatedText;
+                    transEntity.entities = new java.util.ArrayList<>();
+                    mo.messageOwner.translatedText = transEntity;
+                    mo.messageOwner.translatedToLanguage = LLMTranslateConfig.getInstance().getMyLanguage();
+                    mo.translated = true;
+                    // 拼接显示原文 + 翻译
+                    mo.applyNewText(originalText + "\n\n" + translatedText);
+                    mo.generateCaption();
+                    // 原地刷新 cell
+                    mo.forceUpdate = true;
+                    cell.setMessageObject(mo, cell.getCurrentMessagesGroup(), cell.isPinnedBottom(), cell.isPinnedTop(), cell.isFirstInChat(), cell.isLastInChatList());
+                    break;
+                }
+            }
+        }
     }
 
     /**
