@@ -3671,10 +3671,19 @@ public class MessageObject {
             }
             translated = true;
             summarized = false;
-            // 拼接：原文 + 空行 + 翻译
+            // 对于自己发出的消息：messageOwner.message 是翻译后的内容，translatedText.text 是原文
+            // 对于收到的消息：messageOwner.message 是原文，translatedText.text 是翻译
+            // 统一展示顺序：原文在上，翻译在下
             String original = messageOwner.message != null ? messageOwner.message : "";
             String translatedStr = translatedText.text != null ? translatedText.text : "";
-            String combined = original + "\n\n" + translatedStr;
+            String combined;
+            if (isOutOwner()) {
+                // 自己发的消息：translatedStr 是原文，original 是翻译内容
+                combined = translatedStr + "\n\n" + original;
+            } else {
+                // 收到的消息：original 是原文，translatedStr 是翻译
+                combined = original + "\n\n" + translatedStr;
+            }
             applyNewText(combined);
             generateCaption();
             return replyUpdated || true;
