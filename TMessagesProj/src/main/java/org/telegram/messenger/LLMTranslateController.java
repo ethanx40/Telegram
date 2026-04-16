@@ -132,7 +132,6 @@ public class LLMTranslateController {
 
         long dialogId = msg.getDialogId();
 
-        // 对方语言和我一样，跳过
         if (isPeerLanguageSameAsMine(dialogId)) return;
 
         String myLang = LLMTranslateConfig.getInstance().getDialogMyLanguage(dialogId);
@@ -150,24 +149,23 @@ public class LLMTranslateController {
         long key = makeKey(dialogId, msg.getId());
         if (!translatingKeys.add(key)) return;
 
-        // 顺便更新对方语言检测（如果还没有的话）
-        String peerLang = getPeerLanguage(dialogId);
-        if (TextUtils.isEmpty(peerLang)) {
-            LanguageDetector.detectLanguage(text, detectedLang -> {
-                if (detectedLang != null && !"und".equals(detectedLang)) {
-                    String norm = normalizeLanguage(detectedLang);
+        // 先检测消息语言：如果消息已经是我的语言（对方偶尔用我的语言发消息），跳过翻译
+        LanguageDetector.detectLanguage(text, detectedLang -> {
+            if (detectedLang != null && !"und".equals(detectedLang)) {
+                String norm = normalizeLanguage(detectedLang);
+                // 顺便更新对方语言（如果还没设置）
+                String peerLang = getPeerLanguage(dialogId);
+                if (TextUtils.isEmpty(peerLang)) {
                     LLMTranslateConfig.getInstance().setDialogTargetLanguage(dialogId, norm);
-                    // 如果检测到和自己语言一样，跳过翻译
-                    if (norm.equals(normalizeLanguage(myLang))) {
-                        translatingKeys.remove(key);
-                        return;
-                    }
                 }
-                doTranslate(msg, text, myLang, key);
-            }, e -> doTranslate(msg, text, myLang, key));
-        } else {
+                // 消息已经是我的语言，跳过
+                if (norm.equals(normalizeLanguage(myLang))) {
+                    translatingKeys.remove(key);
+                    return;
+                }
+            }
             doTranslate(msg, text, myLang, key);
-        }
+        }, e -> doTranslate(msg, text, myLang, key));
     }
 
     // ==================== 发送消息翻译 ====================
@@ -275,7 +273,7 @@ public class LLMTranslateController {
             JSONObject body = new JSONObject();
             body.put("model", config.getModelName());
             body.put("max_tokens", config.getMaxTokensPerRequest());
-            body.put("temperature", 0.3);
+            body.put("temperature", 0.1);
 
             JSONArray messages = new JSONArray();
             JSONObject sys = new JSONObject();
@@ -284,7 +282,7 @@ public class LLMTranslateController {
             messages.put(sys);
             JSONObject usr = new JSONObject();
             usr.put("role", "user");
-            usr.put("content", text);
+            usr.put("content", "[TRANSLATE TO " + langName.toUpperCase() + "]\n" + text + "\n[/TRANSLATE]");
             messages.put(usr);
             body.put("messages", messages);
 
@@ -433,6 +431,46 @@ public class LLMTranslateController {
     }
 
     // ==================== 工具方法 ====================
+
+    /**
+     * 判断文本是否不需要翻译，可直接跳过。
+     * - 纯数字、纯符号、纯表情
+     * - 国际通用短词（ok, lol, hi 等）
+     * - 文本全由目标语言字符组成（如对方英文，文本全是 ASCII 字母）
+     */
+    public static boolean shouldSkipTranslation(String text, String targetLang) {
+        if (TextUtils.isEmpty(text)) return true;
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) return true;
+
+        // 去掉 emoji 和符号后判断
+        String stripped = trimmed.replaceAll("[\\p{So}\\p{Sc}\\p{Sk}\\p{Sm}\\p{P}\\p{Z}\\p{N}]+", "").trim();
+        // 纯符号/数字/表情
+        if (stripped.isEmpty()) return true;
+
+        // 国际通用短词，无需翻译
+        String lower = stripped.toLowerCase();
+        if (UNIVERSAL_WORDS.contains(lower)) return true;
+
+        // 文本全由目标语言的基本字符组成时跳过
+        String normTarget = normLang(targetLang);
+        if ("en".equals(normTarget) && stripped.matches("[a-zA-Z\\s]+")) return true;
+        if ("zh".equals(normTarget) && stripped.matches("[\\u4e00-\\u9fff\\s]+")) return true;
+        if ("ja".equals(normTarget) && stripped.matches("[\\u3040-\\u309f\\u30a0-\\u30ff\\u4e00-\\u9fff\\s]+")) return true;
+        if ("ko".equals(normTarget) && stripped.matches("[\\uac00-\\ud7af\\u1100-\\u11ff\\s]+")) return true;
+
+        return false;
+    }
+
+    private static final Set<String> UNIVERSAL_WORDS = new java.util.HashSet<>(java.util.Arrays.asList(
+        "ok", "okay", "yes", "no", "hi", "hey", "hello", "bye", "lol", "haha",
+        "hahaha", "wow", "omg", "thx", "thanks", "sorry", "pls", "please",
+        "good", "nice", "cool", "great", "fine", "sure", "yep", "yup", "nope",
+        "hmm", "oh", "ah", "ooh", "brb", "omw", "gg", "ty", "np", "idk",
+        "wtf", "lmao", "rofl", "xd", "imo", "fyi", "asap", "tbd",
+        "好", "好的", "嗯", "哦", "啊", "哈", "哈哈", "呵呵", "嘿",
+        "行", "中", "对", "是", "不", "没", "谢谢", "谢", "拜拜"
+    ));
 
     private long makeKey(long dialogId, int msgId) {
         return (dialogId * 100003L) ^ (msgId & 0xFFFFFFFFL);

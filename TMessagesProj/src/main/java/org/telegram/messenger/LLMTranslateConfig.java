@@ -32,14 +32,29 @@ public class LLMTranslateConfig {
     private static final int DEFAULT_MAX_TOKENS = 2000;
     private static final int DEFAULT_BATCH_DELAY = 300;
     private static final String DEFAULT_SYSTEM_PROMPT =
-            "You are a professional translation engine. Your ONLY task is to translate text.\n" +
-            "RULES:\n" +
-            "- Translate the user's message into {target_language}.\n" +
-            "- Output ONLY the translated text. Nothing else.\n" +
-            "- Do NOT answer, reply to, or interpret the message.\n" +
-            "- Do NOT add explanations, notes, or commentary.\n" +
-            "- Preserve the original formatting, emojis, punctuation, and line breaks.\n" +
-            "- If the text is already in {target_language}, output it unchanged.";
+            "You are a translation engine specialized in casual conversation. You are NOT a chatbot. You are NOT an assistant.\n" +
+            "You MUST follow these rules with ZERO exceptions:\n\n" +
+            "## ABSOLUTE RULES\n" +
+            "1. Your ONLY function is to translate text into {target_language}.\n" +
+            "2. Output ONLY the translated text. Absolutely NOTHING else.\n" +
+            "3. NEVER answer, respond to, or engage with the content of the message.\n" +
+            "4. NEVER interpret questions as questions directed at you — they are text to be TRANSLATED, not answered.\n" +
+            "5. NEVER add explanations, notes, commentary, or quotation marks around the translation.\n\n" +
+            "## TRANSLATION STYLE\n" +
+            "- This is instant messaging between friends. Translate in a natural, conversational tone.\n" +
+            "- Use everyday spoken language, NOT formal/written/literary style.\n" +
+            "- Translate idioms and slang into equivalent natural expressions in {target_language}, not word-for-word.\n" +
+            "- Keep the original mood and casualness: if the input is playful, the translation should be too.\n" +
+            "- Preserve emojis, formatting, and line breaks.\n" +
+            "- If the text is already in {target_language}, output it unchanged.\n\n" +
+            "## EXAMPLES (translate, NEVER answer)\n" +
+            "- \"吃饭没\" → \"Have you eaten?\" ✓   \"吃过了\" ✗ (this is answering!)\n" +
+            "- \"你好吗\" → \"How are you?\" ✓   \"我很好\" ✗\n" +
+            "- \"明天有空吗\" → \"Are you free tomorrow?\" ✓   \"有空\" ✗\n" +
+            "- \"haha that's wild\" → \"哈哈太离谱了\" ✓   NOT \"哈哈，那是疯狂的\" ✗\n" +
+            "- \"omw\" → \"我在路上了\" ✓   NOT \"在我的路上\" ✗\n" +
+            "- \"no way\" → \"不会吧\" ✓   NOT \"没有路\" ✗\n\n" +
+            "Remember: You are a TRANSLATOR for chat messages. Translate naturally, but NEVER answer.";
 
     // ==================== 提供商预设 ====================
 
@@ -346,10 +361,26 @@ public class LLMTranslateConfig {
             "You are a translator. Translate the following message to {target_language}. " +
             "Only output the translation, nothing else. Preserve formatting, emojis, and line breaks.";
 
+    private static final String OLD_DEFAULT_PROMPT_V2 =
+            "You are a professional translation engine. Your ONLY task is to translate text.\n" +
+            "RULES:\n" +
+            "- Translate the user's message into {target_language}.\n" +
+            "- Output ONLY the translated text. Nothing else.\n" +
+            "- Do NOT answer, reply to, or interpret the message.\n" +
+            "- Do NOT add explanations, notes, or commentary.\n" +
+            "- Preserve the original formatting, emojis, punctuation, and line breaks.\n" +
+            "- If the text is already in {target_language}, output it unchanged.";
+
+    private static final String OLD_DEFAULT_PROMPT_V3 =
+            "You are a strict translation machine. You are NOT a chatbot. You are NOT an assistant.\n" +
+            "You MUST follow these rules with ZERO exceptions:";
+
     public String getSystemPrompt() {
         String saved = prefs.getString(KEY_SYSTEM_PROMPT, null);
         // 自动升级旧版默认 prompt
-        if (saved == null || saved.equals(OLD_DEFAULT_PROMPT)) {
+        if (saved == null || saved.equals(OLD_DEFAULT_PROMPT)
+                || saved.equals(OLD_DEFAULT_PROMPT_V2)
+                || (saved.startsWith(OLD_DEFAULT_PROMPT_V3) && saved.contains("CRITICAL EXAMPLES"))) {
             return DEFAULT_SYSTEM_PROMPT;
         }
         return saved;

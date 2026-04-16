@@ -137,6 +137,7 @@ import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessageSuggestionParams;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.LanguageDetector;
 import org.telegram.messenger.LLMTranslateConfig;
 import org.telegram.messenger.LLMTranslateController;
 import org.telegram.messenger.MessagesStorage;
@@ -7476,7 +7477,7 @@ public class ChatActivityEnterView extends FrameLayout implements
             return false;
         }
 
-        // LLM 翻译拦截：先翻译再发送翻译内容给对方
+        // LLM 翻译拦截：先检测语言，需要翻译再翻译后发送
         LLMTranslateConfig llmConfig = LLMTranslateConfig.getInstance();
         if (llmConfig.isEnabled() && llmConfig.isDialogOutgoingEnabled(dialog_id)
                 && llmConfig.isDialogLLMTranslateEnabled(dialog_id)) {
@@ -7484,25 +7485,67 @@ public class ChatActivityEnterView extends FrameLayout implements
             String myLang = llmConfig.getDialogMyLanguage(dialog_id);
             if (!TextUtils.isEmpty(peerLang) && !LLMTranslateController.normLang(peerLang).equals(LLMTranslateController.normLang(myLang))) {
                 final CharSequence originalText = text;
+                final String textStr = originalText.toString().trim();
+
+                // 跳过不需要翻译的文本：纯数字/符号/表情、或已是目标语言的短文本
+                if (LLMTranslateController.shouldSkipTranslation(textStr, peerLang)) {
+                    // 不需要翻译，直接发原文
+                } else {
+
                 final boolean fNotify = notify;
                 final int fScheduleDate = scheduleDate;
                 final int fScheduleRepeatPeriod = scheduleRepeatPeriod;
                 final long fPayStars = payStars;
-                // 异步翻译，完成后发送翻译文本
-                Utilities.globalQueue.postRunnable(() -> {
-                    String translated = MessagesController.getInstance(currentAccount)
-                            .getLLMTranslateController().callTranslateSync(originalText.toString(), peerLang);
-                    AndroidUtilities.runOnUIThread(() -> {
-                        if (!TextUtils.isEmpty(translated)) {
-                            // 发送翻译后的内容给对方
-                            doProcessSendingText(translated, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, originalText.toString());
-                        } else {
-                            // 翻译失败，发送原文
-                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
-                        }
+                final String fPeerLang = peerLang;
+                // 先检测消息语言：如果已经是对方语言（我偶尔发英文），跳过翻译直接发
+                LanguageDetector.detectLanguage(originalText.toString(), detectedLang -> {
+                    if (detectedLang != null && !"und".equals(detectedLang)
+                            && LLMTranslateController.normLang(detectedLang).equals(LLMTranslateController.normLang(fPeerLang))) {
+                        // 消息已经是对方语言，直接发原文
+                        AndroidUtilities.runOnUIThread(() ->
+                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null));
+                        return;
+                    }
+                    // 检测为 und 且文本很短，大概率是通用词，跳过翻译
+                    if (("und".equals(detectedLang) || detectedLang == null) && textStr.length() <= 10) {
+                        AndroidUtilities.runOnUIThread(() ->
+                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null));
+                        return;
+                    }
+                    // 需要翻译
+                    Utilities.globalQueue.postRunnable(() -> {
+                        String translated = MessagesController.getInstance(currentAccount)
+                                .getLLMTranslateController().callTranslateSync(originalText.toString(), fPeerLang);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            if (!TextUtils.isEmpty(translated)) {
+                                doProcessSendingText(translated, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, originalText.toString());
+                            } else {
+                                doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
+                            }
+                        });
+                    });
+                }, e -> {
+                    // 检测失败且文本很短，跳过翻译
+                    if (textStr.length() <= 10) {
+                        AndroidUtilities.runOnUIThread(() ->
+                            doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null));
+                        return;
+                    }
+                    // 检测失败，走翻译流程
+                    Utilities.globalQueue.postRunnable(() -> {
+                        String translated = MessagesController.getInstance(currentAccount)
+                                .getLLMTranslateController().callTranslateSync(originalText.toString(), fPeerLang);
+                        AndroidUtilities.runOnUIThread(() -> {
+                            if (!TextUtils.isEmpty(translated)) {
+                                doProcessSendingText(translated, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, originalText.toString());
+                            } else {
+                                doProcessSendingText(originalText, fNotify, fScheduleDate, fScheduleRepeatPeriod, fPayStars, null);
+                            }
+                        });
                     });
                 });
                 return true; // 告诉调用方消息"已处理"（实际在后台翻译中）
+                } // end else: 需要翻译流程
             }
         }
 

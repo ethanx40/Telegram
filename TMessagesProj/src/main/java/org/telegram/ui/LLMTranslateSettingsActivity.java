@@ -65,7 +65,6 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
     private int advancedHeaderRow;
     private int maxTokensRow;
     private int batchDelayRow;
-    private int systemPromptRow;
     private int advancedInfoRow;
 
     @Override
@@ -93,7 +92,6 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
         advancedHeaderRow = rowCount++;
         maxTokensRow = rowCount++;
         batchDelayRow = rowCount++;
-        systemPromptRow = rowCount++;
         advancedInfoRow = rowCount++;
     }
 
@@ -178,11 +176,6 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
             } else if (position == batchDelayRow) {
                 showEditDialog("Batch Delay (ms)", String.valueOf(config.getBatchDelayMs()), false, value -> {
                     try { config.setBatchDelayMs(Integer.parseInt(value)); } catch (NumberFormatException ignored) {}
-                    adapter.notifyItemChanged(position);
-                });
-            } else if (position == systemPromptRow) {
-                showEditDialog("System Prompt", config.getSystemPrompt(), false, value -> {
-                    config.setSystemPrompt(value);
                     adapter.notifyItemChanged(position);
                 });
             }
@@ -278,11 +271,7 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
                 Theme.getColor(Theme.key_dialogInputFieldActivated),
                 Theme.getColor(Theme.key_text_RedRegular));
         editText.setPadding(0, dp(4), 0, dp(4));
-        boolean multiLine = title.equals("System Prompt");
-        editText.setSingleLine(!multiLine);
-        if (multiLine) {
-            editText.setMaxLines(6);
-        }
+        editText.setSingleLine(true);
         if (isPassword) {
             editText.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         }
@@ -396,11 +385,7 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
                     if (position == maxTokensRow) {
                         cell.setTextAndValue("Max Tokens", String.valueOf(config.getMaxTokensPerRequest()), true);
                     } else if (position == batchDelayRow) {
-                        cell.setTextAndValue("Batch Delay", config.getBatchDelayMs() + " ms", true);
-                    } else if (position == systemPromptRow) {
-                        String prompt = config.getSystemPrompt();
-                        if (prompt.length() > 40) prompt = prompt.substring(0, 40) + "...";
-                        cell.setTextAndValue("System Prompt", prompt, false);
+                        cell.setTextAndValue("Batch Delay", config.getBatchDelayMs() + " ms", false);
                     }
                     break;
                 }
@@ -427,7 +412,7 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
                         cell.setText("Incoming: received messages → your language.\n" +
                                 "Outgoing: your messages → recipient's language (set per chat).");
                     } else if (position == advancedInfoRow) {
-                        cell.setText("Use {target_language} placeholder in system prompt.");
+                        cell.setText("Advanced settings for LLM translation requests.");
                     }
                     break;
                 }
@@ -463,7 +448,7 @@ public class LLMTranslateSettingsActivity extends BaseFragment {
         public int getItemViewType(int position) {
             if (position == enableRow || position == autoTranslateIncomingRow || position == autoTranslateOutgoingRow) {
                 return 0;
-            } else if (position == maxTokensRow || position == batchDelayRow || position == systemPromptRow) {
+            } else if (position == maxTokensRow || position == batchDelayRow) {
                 return 1;
             } else if (position == providerHeaderRow || position == translateHeaderRow || position == advancedHeaderRow) {
                 return 2;
